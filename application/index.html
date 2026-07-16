@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Python 插件 Demo</title>
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div>
+        <p class="eyebrow">AI-Workspace Plugin App</p>
+        <h1>Python + FastAPI 插件应用</h1>
+        <p class="subtitle">
+          iframe 壳层负责 Identity / Dialogue 桥接；Python 后端由扩展生命周期脚本在「启用」时启动。
+        </p>
+      </div>
+      <div id="server-status" class="status warn">正在连接 Python 服务…</div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>Python 后端</h2>
+        <p class="hint">默认地址见 <code>config/server.json</code>（启用扩展后由 <code>onActivate</code> 启动 uvicorn）。</p>
+        <div class="actions">
+          <button id="btn-refresh-info" type="button" disabled>拉取 /api/info</button>
+          <button id="btn-echo" type="button" disabled>POST /api/echo</button>
+        </div>
+        <pre id="python-output" class="output">等待服务就绪…</pre>
+      </section>
+
+      <section class="card">
+        <h2>Identity Token</h2>
+        <div id="identity-status" class="status warn">握手中…</div>
+        <div class="actions">
+          <button id="btn-token" type="button" disabled>getToken()</button>
+          <button id="btn-send-token" type="button" disabled>带 Token 调 Python</button>
+        </div>
+        <pre id="token-output" class="output">—</pre>
+      </section>
+
+      <section class="card">
+        <h2>Dialogue 桥</h2>
+        <div id="dialogue-status" class="status warn">握手中…</div>
+        <div class="actions">
+          <button id="btn-session" type="button" disabled>createSession()</button>
+        </div>
+        <pre id="dialogue-output" class="output">—</pre>
+      </section>
+    </main>
+
+    <script src="./aiw-identity.js"></script>
+    <script src="./aiw-dialogue.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

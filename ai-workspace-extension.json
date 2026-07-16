@@ -1,0 +1,38 @@
+{
+  "$schema": "../../schemas/aion-extension-v1.json",
+  "name": "third-party-integration-demo-python",
+  "displayName": "三方集成 Demo (Python)",
+  "version": "0.1.0",
+  "description": "Full-stack plugin demo: FastAPI Python backend + iframe shell with identity and dialogue bridges.",
+  "author": "AI-Workspace Contributors",
+  "icon": "assets/icon.svg",
+  "permissions": {
+    "storage": true,
+    "network": true,
+    "shell": true,
+    "dialogue": true,
+    "identity": true,
+    "identityModels": true
+  },
+  "lifecycle": {
+    "onInstall": "scripts/onInstall.js",
+    "onActivate": "scripts/activate.js",
+    "onDeactivate": "scripts/deactivate.js",
+    "timeoutMs": 300000
+  },
+  "sidecar": {
+    "command": "@aiw/node",
+    "args": ["scripts/sidecar.js"],
+    "health": {
+      "host": "127.0.0.1",
+      "port": 18765,
+      "path": "/api/health",
+      "timeoutMs": 20000,
+      "intervalMs": 400
+    },
+    "stopTimeoutMs": 5000
+  },
+  "contributes": {
+    "productCenterApps": "$file:contributes/product-center-apps.json"
+  }
+}
