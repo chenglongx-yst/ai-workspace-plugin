@@ -1,4 +1,8 @@
-/* AI-Workspace Dialogue Bridge SDK (Vanilla JS) — trimmed from integration doc §10.1 */
+/* AI-Workspace 三方对话桥 SDK (Vanilla JS, IIFE)
+ * 与对接文档 §10.1 对齐：含 sendMessage / 流式 / setModel 等完整方法。
+ * 用法：<script src="./aiw-dialogue.js"></script>
+ *       const dlg = window.aiworkspace.dialogue;
+ */
 (function (global) {
   'use strict';
 
@@ -62,8 +66,49 @@
   AiwDialogueClient.prototype.closeSession = function (sessionId) {
     return this._call('closeSession', { sessionId: sessionId });
   };
+  AiwDialogueClient.prototype.sendMessage = function (p) {
+    return this._call('sendMessage', {
+      sessionId: p.sessionId,
+      text: p.text,
+      msgId: p.msgId,
+      files: p.files,
+    });
+  };
+  AiwDialogueClient.prototype.stopGeneration = function (sessionId) {
+    return this._call('stopGeneration', { sessionId: sessionId });
+  };
+  AiwDialogueClient.prototype.setModel = function (sessionId, modelId) {
+    return this._call('setModel', { sessionId: sessionId, modelId: modelId });
+  };
+  AiwDialogueClient.prototype.setMode = function (sessionId, mode) {
+    return this._call('setMode', { sessionId: sessionId, mode: mode });
+  };
   AiwDialogueClient.prototype.getModelInfo = function (sessionId) {
     return this._call('getModelInfo', { sessionId: sessionId });
+  };
+  AiwDialogueClient.prototype.confirmPermission = function (p) {
+    return this._call('confirmPermission', {
+      sessionId: p.sessionId,
+      callId: p.callId,
+      data: p.data,
+      msgId: p.msgId,
+    });
+  };
+
+  AiwDialogueClient.prototype.onStream = function (sessionId, cb) {
+    var self = this;
+    if (!this._streamCbs[sessionId]) this._streamCbs[sessionId] = [];
+    this._streamCbs[sessionId].push(cb);
+    this._call('onStream', { sessionId: sessionId });
+    return function () {
+      var arr = self._streamCbs[sessionId] || [];
+      var i = arr.indexOf(cb);
+      if (i >= 0) arr.splice(i, 1);
+      if (arr.length === 0) {
+        delete self._streamCbs[sessionId];
+        self._call('offStream', { sessionId: sessionId });
+      }
+    };
   };
 
   AiwDialogueClient.prototype._nextId = function () {
@@ -114,6 +159,12 @@
       clearTimeout(entry.timer);
       if (data.success) entry.resolve(data.data);
       else entry.reject(DialogueError(data.error || 'dialogue request failed'));
+      return;
+    }
+
+    if (data.type === T_STREAM) {
+      var cbs = this._streamCbs[data.sessionId];
+      if (cbs) for (var j = 0; j < cbs.length; j++) cbs[j](data.event);
     }
   };
 

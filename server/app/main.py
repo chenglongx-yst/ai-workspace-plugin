@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for the Python plugin demo."""
+"""FastAPI entrypoint for the LLM chat plugin."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from app.config import settings
 from app.routes.api import router as api_router
 
 app = FastAPI(
-    title="AI-Workspace Python Plugin Demo",
-    version="0.1.0",
-    description="Sample FastAPI backend started by extension lifecycle hooks.",
+    title="AI-Workspace LLM Chat Plugin",
+    version="0.2.0",
+    description="Dialogue bridge shell + Models Token direct chat via Python Sidecar.",
 )
 
 app.add_middleware(
@@ -28,7 +28,7 @@ app.include_router(api_router)
 @app.get("/")
 def root() -> dict[str, str]:
     return {
-        "message": "AI-Workspace Python plugin demo API",
+        "message": "AI-Workspace LLM chat plugin API",
         "extension": settings.extension_name,
         "docs": "/docs",
     }

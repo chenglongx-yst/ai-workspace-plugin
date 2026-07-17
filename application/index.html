@@ -3,51 +3,55 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Python 插件 Demo</title>
+    <title>LLM 对话</title>
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body>
-    <header class="hero">
-      <div>
-        <p class="eyebrow">AI-Workspace Plugin App</p>
-        <h1>Python + FastAPI 插件应用</h1>
-        <p class="subtitle">
-          iframe 壳层负责 Identity / Dialogue 桥接；Python 后端由扩展生命周期脚本在「启用」时启动。
-        </p>
-      </div>
-      <div id="server-status" class="status warn">正在连接 Python 服务…</div>
-    </header>
-
-    <main class="grid">
-      <section class="card">
-        <h2>Python 后端</h2>
-        <p class="hint">默认地址见 <code>config/server.json</code>（启用扩展后由 <code>onActivate</code> 启动 uvicorn）。</p>
-        <div class="actions">
-          <button id="btn-refresh-info" type="button" disabled>拉取 /api/info</button>
-          <button id="btn-echo" type="button" disabled>POST /api/echo</button>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <h1>LLM 对话</h1>
+          <span id="conn-status" class="pill warn">初始化中…</span>
         </div>
-        <pre id="python-output" class="output">等待服务就绪…</pre>
-      </section>
-
-      <section class="card">
-        <h2>Identity Token</h2>
-        <div id="identity-status" class="status warn">握手中…</div>
-        <div class="actions">
-          <button id="btn-token" type="button" disabled>getToken()</button>
-          <button id="btn-send-token" type="button" disabled>带 Token 调 Python</button>
+        <div class="topbar-actions">
+          <label class="model-label">
+            模型
+            <select id="model-select" disabled>
+              <option value="">加载中…</option>
+            </select>
+          </label>
+          <button id="btn-new-chat" type="button" class="ghost" title="新对话">新对话</button>
         </div>
-        <pre id="token-output" class="output">—</pre>
-      </section>
+      </header>
 
-      <section class="card">
-        <h2>Dialogue 桥</h2>
-        <div id="dialogue-status" class="status warn">握手中…</div>
-        <div class="actions">
-          <button id="btn-session" type="button" disabled>createSession()</button>
+      <nav class="tabs" role="tablist">
+        <button type="button" class="tab active" data-mode="bridge" role="tab" aria-selected="true">
+          对话桥
+        </button>
+        <button type="button" class="tab" data-mode="direct" role="tab" aria-selected="false">
+          模型直连
+        </button>
+      </nav>
+
+      <main id="messages" class="messages" aria-live="polite">
+        <div class="empty-hint" id="empty-hint">
+          发送消息开始对话。可在顶部切换「对话桥」或「模型直连」。
         </div>
-        <pre id="dialogue-output" class="output">—</pre>
-      </section>
-    </main>
+      </main>
+
+      <footer class="composer">
+        <textarea
+          id="input"
+          rows="2"
+          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+          disabled
+        ></textarea>
+        <div class="composer-actions">
+          <button id="btn-stop" type="button" class="ghost danger" disabled>停止</button>
+          <button id="btn-send" type="button" disabled>发送</button>
+        </div>
+      </footer>
+    </div>
 
     <script src="./aiw-identity.js"></script>
     <script src="./aiw-dialogue.js"></script>
