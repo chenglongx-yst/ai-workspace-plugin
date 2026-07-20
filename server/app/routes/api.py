@@ -1,84 +1,65 @@
-"""HTTP API routes: health, models list, OpenAI-compatible chat proxy."""
+"""C-drive cleaner HTTP API."""
 
 from __future__ import annotations
 
-import json
 import platform
+import secrets
 import sys
+import time
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Literal
+from typing import Any
 
-import httpx
-from fastapi import APIRouter, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.config import CLIENT_CONFIG_HINT, settings
-from app.demo_constants import DEMO_PRODUCT_SECRET
-from app.identity_crypto import (
-    list_available_models,
-    resolve_api_key_for_model,
-    summarize_models_payload,
-    verify_models_token,
-)
+from app.config import settings
+from app.ps_runner import run_ps_json, skill_root_ok
 
-router = APIRouter(prefix="/api", tags=["llm"])
+router = APIRouter(prefix="/api", tags=["cleaner"])
 
+CATEGORY_META = {
+    "system_cache": {"name": "系统缓存", "description": "系统运行产生的缓存文件"},
+    "temp_files": {"name": "临时文件", "description": "用户与应用临时目录"},
+    "downloads": {"name": "下载文件", "description": "下载文件夹占用（默认不清理）"},
+    "log_files": {"name": "日志文件", "description": "Windows 错误报告等日志残留"},
+    "recycle_bin": {"name": "回收站", "description": "回收站中的已删除文件"},
+    "other_junk": {"name": "其他垃圾", "description": "预读取等其它可关注占用"},
+}
 
-class ChatMessage(BaseModel):
-    role: Literal["system", "user", "assistant"]
-    content: str = Field(min_length=1, max_length=100_000)
-
-
-class ChatRequest(BaseModel):
-    messages: list[ChatMessage] = Field(min_length=1)
-    model: str = Field(min_length=1, max_length=200)
-    stream: bool = True
-    temperature: float | None = Field(default=None, ge=0, le=2)
+# confirmToken -> { items, expires_at }
+_deep_tokens: dict[str, dict[str, Any]] = {}
+_TOKEN_TTL_SEC = 300
 
 
-def _require_product_secret() -> str:
-    secret = (settings.product_secret or "").strip()
-    if not secret:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "productSecret 未配置。Demo 约定密钥为 "
-                f"「{DEMO_PRODUCT_SECRET}」：请在 config/server.json 设置 productSecret，"
-                f"并与 client config「{CLIENT_CONFIG_HINT}」一致。"
-            ),
+def enrich_scan(data: dict[str, Any]) -> dict[str, Any]:
+    cats = []
+    for raw in data.get("categories") or []:
+        cid = str(raw.get("id") or "")
+        meta = CATEGORY_META.get(cid, {})
+        cats.append(
+            {
+                **raw,
+                "name": meta.get("name") or cid,
+                "description": meta.get("description") or "",
+            }
         )
-    return secret
+    data["categories"] = cats
+    return data
 
 
-def _extract_models_token(
-    authorization: str | None,
-    x_identity_models_token: str | None,
-) -> str:
-    if x_identity_models_token and x_identity_models_token.strip():
-        return x_identity_models_token.strip()
-    if authorization:
-        token = authorization.strip()
-        if token.lower().startswith("bearer "):
-            token = token[7:].strip()
-        if token:
-            return token
-    return ""
+class SafeCleanRequest(BaseModel):
+    categoryIds: list[str] = Field(default_factory=list)
+    confirm: bool = False
+    preview: bool = False
 
 
-def _decrypt_models_payload(token: str) -> dict[str, Any]:
-    secret = _require_product_secret()
-    try:
-        return verify_models_token(token, secret)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=401,
-            detail=(
-                f"Invalid models token: {exc}. "
-                f"确认签发与解密使用同一密钥。Demo 约定：client config 配置 {CLIENT_CONFIG_HINT}，"
-                f"本服务 productSecret={DEMO_PRODUCT_SECRET!r}（来源: {settings.product_secret_source}）。"
-            ),
-        ) from exc
+class DeepPreviewRequest(BaseModel):
+    items: list[str] = Field(default_factory=lambda: ["update_cache", "winsxs", "hibernate"])
+
+
+class DeepCleanRequest(BaseModel):
+    confirmToken: str = Field(min_length=8)
+    confirm: bool = False
 
 
 @router.get("/health")
@@ -95,124 +76,87 @@ def info() -> dict[str, Any]:
         "serverTime": datetime.now(timezone.utc).isoformat(),
         "host": settings.host,
         "port": settings.port,
-        "extensionDir": str(settings.extension_dir),
-        "productSecretConfigured": bool(settings.product_secret.strip()),
-        "productSecretSource": settings.product_secret_source,
-        "clientConfigHint": CLIENT_CONFIG_HINT,
-        "modelBaseUrl": settings.model_base_url,
-        "chatCompletionsUrl": settings.chat_completions_url,
+        "skillRoot": str(settings.skill_root),
+        "skillReady": skill_root_ok(),
     }
 
 
-@router.get("/models")
-def list_models(
-    authorization: str | None = Header(default=None),
-    x_identity_models_token: str | None = Header(default=None, alias="X-Identity-Models-Token"),
-    x_identity_version: str | None = Header(default=None, alias="X-Identity-Version"),
-) -> dict[str, Any]:
-    if x_identity_version is not None and x_identity_version != "1":
-        raise HTTPException(status_code=401, detail="X-Identity-Version must be 1")
+@router.get("/disk")
+def disk() -> dict[str, Any]:
+    """Lightweight disk stats via quick scan payload (disk section only)."""
+    data = enrich_scan(run_ps_json("plugin-quick-scan.ps1", timeout=180))
+    return {"ok": True, "disk": data.get("disk"), "scannedAt": data.get("scannedAt")}
 
-    token = _extract_models_token(authorization, x_identity_models_token)
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing X-Identity-Models-Token or Authorization")
 
-    payload = _decrypt_models_payload(token)
-    models = list_available_models(payload)
-    summary = summarize_models_payload(payload)
+@router.post("/scan")
+def scan() -> dict[str, Any]:
+    if not skill_root_ok():
+        raise HTTPException(status_code=500, detail="skill-c-cleaner vendor scripts missing")
+    return enrich_scan(run_ps_json("plugin-quick-scan.ps1", timeout=300))
+
+
+@router.post("/clean/safe")
+def clean_safe(body: SafeCleanRequest) -> dict[str, Any]:
+    if not body.categoryIds:
+        raise HTTPException(status_code=400, detail="categoryIds required")
+    # Never clean downloads via safe API
+    blocked = {"downloads"}
+    ids = [c for c in body.categoryIds if c and c.lower() not in blocked]
+    if not ids:
+        raise HTTPException(status_code=400, detail="No cleanable categories selected")
+
+    if not body.preview and not body.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true required to execute")
+
+    args = ["-CategoryIds", ",".join(ids)]
+    if body.confirm and not body.preview:
+        args.append("-ReallyDelete")
+
+    return run_ps_json("plugin-clean-safe.ps1", args=args, timeout=600)
+
+
+@router.post("/clean/deep/preview")
+def clean_deep_preview(body: DeepPreviewRequest) -> dict[str, Any]:
+    items = [i for i in body.items if i]
+    if not items:
+        raise HTTPException(status_code=400, detail="items required")
+    # Exclude restore_limit from default executable set
+    preview = run_ps_json(
+        "plugin-clean-deep.ps1",
+        args=["-Items", ",".join(items)],
+        timeout=600,
+    )
+    token = secrets.token_urlsafe(24)
+    _deep_tokens[token] = {
+        "items": items,
+        "expires_at": time.time() + _TOKEN_TTL_SEC,
+        "previewFreedBytes": preview.get("freedBytes", 0),
+    }
     return {
         "ok": True,
-        "models": models,
-        "defaultModel": models[0] if models else None,
-        "chatCompletionsUrl": settings.chat_completions_url,
-        **summary,
+        "confirmToken": token,
+        "expiresInSec": _TOKEN_TTL_SEC,
+        "preview": preview,
+        "warnings": [
+            "深度清理可能影响系统更新缓存、组件存储或休眠功能。",
+            "请确认已保存工作，并了解操作不可轻易回滚。",
+        ],
     }
 
 
-async def _upstream_chat_stream(
-    url: str,
-    api_key: str,
-    body: dict[str, Any],
-) -> AsyncIterator[str]:
-    timeout = httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream(
-            "POST",
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-            },
-            json=body,
-        ) as resp:
-            if resp.status_code >= 400:
-                err_text = (await resp.aread()).decode("utf-8", errors="replace")
-                yield f"data: {json.dumps({'error': err_text, 'status': resp.status_code}, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
-                return
+@router.post("/clean/deep")
+def clean_deep(body: DeepCleanRequest) -> dict[str, Any]:
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true required")
+    entry = _deep_tokens.pop(body.confirmToken, None)
+    if not entry:
+        raise HTTPException(status_code=400, detail="invalid or expired confirmToken")
+    if time.time() > float(entry["expires_at"]):
+        raise HTTPException(status_code=400, detail="confirmToken expired")
 
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    yield f"{line}\n\n"
-                else:
-                    # Some gateways send raw JSON lines
-                    yield f"data: {line}\n\n"
-
-
-@router.post("/chat")
-async def chat(
-    body: ChatRequest,
-    authorization: str | None = Header(default=None),
-    x_identity_models_token: str | None = Header(default=None, alias="X-Identity-Models-Token"),
-    x_identity_version: str | None = Header(default=None, alias="X-Identity-Version"),
-) -> Any:
-    if x_identity_version is not None and x_identity_version != "1":
-        raise HTTPException(status_code=401, detail="X-Identity-Version must be 1")
-
-    token = _extract_models_token(authorization, x_identity_models_token)
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing X-Identity-Models-Token or Authorization")
-
-    payload = _decrypt_models_payload(token)
-    try:
-        api_key = resolve_api_key_for_model(payload, body.model)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    upstream_body: dict[str, Any] = {
-        "model": body.model,
-        "messages": [{"role": m.role, "content": m.content} for m in body.messages],
-        "stream": body.stream,
-    }
-    if body.temperature is not None:
-        upstream_body["temperature"] = body.temperature
-
-    url = settings.chat_completions_url
-
-    if body.stream:
-        return StreamingResponse(
-            _upstream_chat_stream(url, api_key, upstream_body),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    timeout = httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=upstream_body,
-        )
-        if resp.status_code >= 400:
-            raise HTTPException(status_code=502, detail=f"Upstream error {resp.status_code}: {resp.text}")
-        return resp.json()
+    items = entry["items"]
+    return run_ps_json(
+        "plugin-clean-deep.ps1",
+        args=["-Items", ",".join(items), "-ReallyDelete"],
+        timeout=900,
+    )

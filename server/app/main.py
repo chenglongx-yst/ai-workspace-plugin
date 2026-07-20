@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for the LLM chat plugin."""
+"""FastAPI entrypoint for the C-drive cleaner plugin."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from app.config import settings
 from app.routes.api import router as api_router
 
 app = FastAPI(
-    title="AI-Workspace LLM Chat Plugin",
-    version="0.2.0",
-    description="Dialogue bridge shell + Models Token direct chat via Python Sidecar.",
+    title="AI-Workspace C-Drive Cleaner",
+    version="0.3.0",
+    description="Scan and clean C-drive junk via skill-c-cleaner PowerShell scripts.",
 )
 
 app.add_middleware(
@@ -28,7 +28,7 @@ app.include_router(api_router)
 @app.get("/")
 def root() -> dict[str, str]:
     return {
-        "message": "AI-Workspace LLM chat plugin API",
+        "message": "AI-Workspace C-drive cleaner API",
         "extension": settings.extension_name,
         "docs": "/docs",
     }

@@ -1,18 +1,15 @@
 {
   "$schema": "../../schemas/aion-extension-v1.json",
-  "name": "third-party-integration-demo-python",
-  "displayName": "LLM 对话",
-  "version": "0.2.0",
-  "description": "LLM chat plugin: dialogue bridge + Models Token direct chat via FastAPI Sidecar.",
+  "name": "c-drive-cleaner",
+  "displayName": "C盘垃圾回收大师",
+  "version": "0.3.1",
+  "description": "C盘垃圾扫描与安全/深度清理（对齐设计稿视觉）。",
   "author": "AI-Workspace Contributors",
   "icon": "assets/icon.svg",
   "permissions": {
     "storage": true,
     "network": true,
-    "shell": true,
-    "dialogue": true,
-    "identity": true,
-    "identityModels": true
+    "shell": true
   },
   "lifecycle": {
     "onInstall": "scripts/onInstall.js",

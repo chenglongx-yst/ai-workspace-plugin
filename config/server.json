@@ -1,7 +1,5 @@
 {
   "host": "127.0.0.1",
   "port": 18765,
-  "productSecret": "1234",
-  "modelBaseUrl": "https://token.longshine.com/v1",
-  "chatCompletionsPath": "/chat/completions"
+  "skillRoot": "vendor/skill-c-cleaner"
 }

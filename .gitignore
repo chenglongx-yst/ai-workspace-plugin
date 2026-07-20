@@ -3,3 +3,6 @@ server/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.superpowers/
+
+.specify/extensions/.cache/

@@ -1,605 +1,397 @@
-(function () {
-  'use strict';
+(() => {
+  const API_BASE = "http://127.0.0.1:18765";
 
-  var identity = window.aiworkspace && window.aiworkspace.identity;
-  var dialogue = window.aiworkspace && window.aiworkspace.dialogue;
-
-  var el = {
-    status: document.getElementById('conn-status'),
-    modelSelect: document.getElementById('model-select'),
-    messages: document.getElementById('messages'),
-    emptyHint: document.getElementById('empty-hint'),
-    input: document.getElementById('input'),
-    btnSend: document.getElementById('btn-send'),
-    btnStop: document.getElementById('btn-stop'),
-    btnNew: document.getElementById('btn-new-chat'),
-    tabs: document.querySelectorAll('.tab'),
+  const ICON_SVG = {
+    system_cache:
+      '<svg viewBox="0 0 24 24" fill="none"><path d="M4 7h16v10H4z" fill="#fff" opacity=".95"/><path d="M7 10h4v4H7zm6 0h4v2h-4z" fill="#2563eb"/><rect x="3" y="5" width="18" height="14" rx="2" stroke="#fff" stroke-width="1.5" fill="none"/></svg>',
+    temp_files:
+      '<svg viewBox="0 0 24 24" fill="none"><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="#fff"/><path d="M14 3v5h5" stroke="#ea580c" stroke-width="1.4" fill="none"/><path d="M8 13h8M8 16h6" stroke="#ea580c" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    downloads:
+      '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" fill="#fff" opacity=".9"/><path d="M12 6v8m0 0 3.5-3.5M12 14 8.5 10.5" stroke="#15803d" stroke-width="2" stroke-linecap="round"/><path d="M7 17h10" stroke="#15803d" stroke-width="2" stroke-linecap="round"/></svg>',
+    log_files:
+      '<svg viewBox="0 0 24 24" fill="none"><rect x="5" y="3" width="14" height="18" rx="2" fill="#fff"/><path d="M8 8h8M8 12h8M8 16h5" stroke="#7c3aed" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    recycle_bin:
+      '<svg viewBox="0 0 24 24" fill="none"><path d="M9 4h6l1 2h4v2H4V6h4l1-2z" fill="#fff"/><path d="M7 8h10l-1 12H8L7 8z" fill="#fff" opacity=".95"/><path d="M10 11v6m4-6v6" stroke="#a16207" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    other_junk:
+      '<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="12" rx="2" fill="#fff"/><path d="M9 8V6a3 3 0 0 1 6 0v2" stroke="#db2777" stroke-width="1.6"/><circle cx="9" cy="14" r="1.2" fill="#db2777"/><circle cx="12" cy="14" r="1.2" fill="#db2777"/><circle cx="15" cy="14" r="1.2" fill="#db2777"/></svg>',
   };
 
-  var state = {
-    mode: 'bridge', // 'bridge' | 'direct'
-    apiBase: '',
-    busy: false,
-    bridge: {
-      sessionId: null,
-      unsub: null,
-      modelInfo: null,
-    },
-    direct: {
-      modelsToken: null,
-      models: [],
-      history: [],
-      abort: null,
-    },
+  const state = {
+    categories: [],
+    selected: new Set(),
+    disk: null,
+    freeableBytes: 0,
+    junkBytes: 0,
+    scanning: false,
+    deepToken: null,
+    modalMode: null, // "safe" | "deep"
+    pendingSafeIds: [],
   };
 
-  function setPill(stateName, text) {
-    el.status.className = 'pill ' + stateName;
-    el.status.textContent = text;
+  let toastTimer = null;
+  const $ = (id) => document.getElementById(id);
+
+  function fmtGB(bytes) {
+    const gb = Number(bytes || 0) / 1024 ** 3;
+    return gb >= 10 ? gb.toFixed(1) : gb.toFixed(2);
   }
 
-  function setBusy(busy) {
-    state.busy = busy;
-    el.btnSend.disabled = busy || !canSend();
-    el.btnStop.disabled = !busy;
-    el.input.disabled = busy ? true : !canSend();
-    el.modelSelect.disabled = busy || el.modelSelect.options.length === 0;
+  function fmtSize(bytes) {
+    const b = Number(bytes || 0);
+    if (b >= 1024 ** 3) return `${fmtGB(b)} GB`;
+    if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MB`;
+    if (b >= 1024) return `${(b / 1024).toFixed(0)} KB`;
+    return `${b} B`;
   }
 
-  function canSend() {
-    if (state.mode === 'bridge') return !!state.bridge.sessionId;
-    return !!state.direct.modelsToken && state.direct.models.length > 0;
+  function fmtCount(n) {
+    return Number(n || 0).toLocaleString("zh-CN");
   }
 
-  function clearMessages() {
-    el.messages.innerHTML = '';
-    el.emptyHint = document.createElement('div');
-    el.emptyHint.className = 'empty-hint';
-    el.emptyHint.id = 'empty-hint';
-    el.emptyHint.textContent =
-      state.mode === 'bridge'
-        ? '对话桥模式：复用宿主 Claude/ACP 能力，支持工具与流式输出。'
-        : '模型直连模式：经 Python 解密 Models Token 后调用企业网关。';
-    el.messages.appendChild(el.emptyHint);
+  function showToast(message, kind = "") {
+    const el = $("toast");
+    if (!el) return;
+    el.textContent = message;
+    el.className = `toast ${kind}`.trim();
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add("hidden"), 3200);
   }
 
-  function removeEmptyHint() {
-    var hint = document.getElementById('empty-hint');
-    if (hint) hint.remove();
+  function setBusy(on, text) {
+    const el = $("busy");
+    if (!el) return;
+    el.classList.toggle("hidden", !on);
+    if (text) $("busy-text").textContent = text;
   }
 
-  function appendMessage(role, text, opts) {
-    opts = opts || {};
-    removeEmptyHint();
-    var wrap = document.createElement('div');
-    wrap.className = 'msg ' + role;
-    if (opts.id) wrap.dataset.msgId = opts.id;
-
-    var roleEl = document.createElement('div');
-    roleEl.className = 'role';
-    roleEl.textContent = role === 'user' ? '我' : role === 'assistant' ? '助手' : '系统';
-
-    var bubble = document.createElement('div');
-    bubble.className = 'bubble' + (opts.streaming ? ' streaming' : '');
-    bubble.textContent = text || '';
-
-    wrap.appendChild(roleEl);
-    wrap.appendChild(bubble);
-    el.messages.appendChild(wrap);
-    el.messages.scrollTop = el.messages.scrollHeight;
-    return { wrap: wrap, bubble: bubble };
+  function closeModal() {
+    $("modal").classList.add("hidden");
+    state.modalMode = null;
+    state.pendingSafeIds = [];
+    state.deepToken = null;
   }
 
-  function updateAssistantBubble(msgId, text, streaming) {
-    var node = el.messages.querySelector('[data-msg-id="' + msgId + '"] .bubble');
-    if (!node) {
-      var created = appendMessage('assistant', text, { id: msgId, streaming: streaming });
-      return created.bubble;
+  function openModal({ title, warn, actionsHtml, mode }) {
+    $("modal-title").textContent = title;
+    $("modal-warn").textContent = warn || "";
+    $("modal-actions").innerHTML = actionsHtml || "";
+    state.modalMode = mode;
+    $("modal").classList.remove("hidden");
+  }
+
+  async function api(path, options = {}) {
+    let res;
+    try {
+      res = await fetch(`${API_BASE}${path}`, {
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options,
+      });
+    } catch (err) {
+      throw new Error(`无法连接清理服务 (${API_BASE})，请确认插件已启用。${err.message || ""}`);
     }
-    node.textContent = text;
-    if (streaming) node.classList.add('streaming');
-    else node.classList.remove('streaming');
-    el.messages.scrollTop = el.messages.scrollHeight;
-    return node;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data.detail || data.message || res.statusText;
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+    return data;
   }
 
-  function fillModelSelect(models, currentId) {
-    el.modelSelect.innerHTML = '';
-    if (!models || models.length === 0) {
-      var opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = '暂无可用模型';
-      el.modelSelect.appendChild(opt);
-      el.modelSelect.disabled = true;
+  function setStatus(text, kind = "") {
+    const el = $("scan-status");
+    el.innerHTML = `<span class="status-text">${text}</span>`;
+    el.className = `status-line ${kind}`.trim();
+  }
+
+  function setHint(text) {
+    const el = $("scan-hint");
+    if (el) el.textContent = text;
+  }
+
+  function selectedCleanableIds() {
+    return [...state.selected].filter((id) => {
+      const cat = state.categories.find((c) => c.id === id);
+      return cat && String(cat.risk).toLowerCase() === "safe";
+    });
+  }
+
+  function selectedBytes() {
+    return state.categories
+      .filter((c) => state.selected.has(c.id) && String(c.risk).toLowerCase() === "safe")
+      .reduce((sum, c) => sum + Number(c.bytes || 0), 0);
+  }
+
+  function updateDonut(freePct) {
+    const arc = $("donut-arc");
+    if (!arc) return;
+    const c = 2 * Math.PI * 15.5;
+    const pct = Math.max(0, Math.min(100, Number(freePct) || 0));
+    const filled = (pct / 100) * c;
+    arc.style.strokeDasharray = `${filled} ${c}`;
+  }
+
+  function updateButtons() {
+    const bytes = selectedBytes();
+    const has = bytes > 0 && !state.scanning;
+    $("btn-one-click").disabled = !has;
+    $("btn-clean-now").disabled = !has;
+    $("btn-deep").disabled = state.scanning;
+    const label = $("btn-clean-label");
+    if (label) label.textContent = bytes > 0 ? `立即清理 ${fmtGB(bytes)} GB` : "立即清理";
+    $("freeable-gb").textContent = fmtGB(state.freeableBytes);
+  }
+
+  function iconHtml(id) {
+    return ICON_SVG[id] || ICON_SVG.other_junk;
+  }
+
+  function isTruthy(v) {
+    return v === true || v === "True" || v === "true" || v === 1 || v === "1";
+  }
+
+  function render() {
+    const disk = state.disk || {};
+    $("disk-total").textContent = `${disk.totalGB ?? "—"} GB`;
+    $("disk-used-text").textContent = `已用 ${disk.usedGB ?? "—"} GB`;
+    $("disk-used-bar").style.width = `${Math.min(100, Number(disk.usedPercent || 0))}%`;
+    $("disk-free").textContent = `${disk.freeGB ?? "—"} GB`;
+    const freePct = disk.totalGB
+      ? (Number(disk.freeGB) / Number(disk.totalGB)) * 100
+      : 0;
+    $("disk-free-pct").textContent = `${freePct.toFixed(1)}% 可用`;
+    updateDonut(freePct);
+
+    $("junk-gb").textContent = `${fmtGB(state.freeableBytes)} GB`;
+    const junkPct = disk.totalBytes
+      ? ((state.freeableBytes / Number(disk.totalBytes)) * 100).toFixed(1)
+      : "—";
+    $("junk-pct").textContent = `占用 ${junkPct}%`;
+
+    $("cat-icons").innerHTML = state.categories
+      .map(
+        (c) => `
+      <div class="cat-icon">
+        <div class="cat-badge c-${c.id}">${iconHtml(c.id)}</div>
+        <div class="name">${c.name}</div>
+        <div class="size">${fmtSize(c.bytes)}</div>
+      </div>`
+      )
+      .join("");
+
+    $("cat-list").innerHTML = state.categories
+      .map((c) => {
+        const checked = state.selected.has(c.id) ? "checked" : "";
+        const disabled = String(c.risk).toLowerCase() !== "safe" ? "disabled" : "";
+        const paths = (c.paths || []).map((p) => `<div>${p}</div>`).join("");
+        return `
+        <div class="cat-row" data-id="${c.id}">
+          <div class="ico c-${c.id}">${iconHtml(c.id)}</div>
+          <div>
+            <div class="title">${c.name}</div>
+            <div class="desc">${c.description || ""}</div>
+            <div class="meta">共 ${fmtCount(c.itemCount)} 项${String(c.risk).toLowerCase() === "cautious" ? " · 默认不清理" : ""}</div>
+          </div>
+          <div class="size">${fmtSize(c.bytes)}</div>
+          <input class="check" type="checkbox" data-id="${c.id}" ${checked} ${disabled} />
+          <div class="cat-paths">${paths || "无路径详情"}</div>
+        </div>`;
+      })
+      .join("");
+
+    updateButtons();
+  }
+
+  async function runScan() {
+    state.scanning = true;
+    updateButtons();
+    setBusy(true, "正在扫描 C 盘…");
+    setStatus("正在扫描…", "warn");
+    setHint("正在分析 C 盘垃圾文件，请稍候…");
+    try {
+      const data = await api("/api/scan", { method: "POST", body: "{}" });
+      state.categories = data.categories || [];
+      state.disk = data.disk || null;
+      state.freeableBytes = Number(data.freeableBytes || 0);
+      state.junkBytes = Number(data.junkBytes || 0);
+      state.selected = new Set(
+        state.categories
+          .filter((c) => isTruthy(c.selectedDefault) && String(c.risk).toLowerCase() === "safe")
+          .map((c) => c.id)
+      );
+      // fallback: if nothing selected but safe categories exist, select all safe with bytes>0
+      if (state.selected.size === 0) {
+        state.categories
+          .filter((c) => String(c.risk).toLowerCase() === "safe" && Number(c.bytes) > 0)
+          .forEach((c) => state.selected.add(c.id));
+      }
+      setStatus("垃圾扫描完成", "ok");
+      setHint(`扫描完成，发现可清理垃圾 ${fmtGB(state.freeableBytes)} GB`);
+      render();
+    } catch (err) {
+      setStatus("扫描失败", "err");
+      setHint(err.message);
+      showToast(err.message, "err");
+    } finally {
+      state.scanning = false;
+      setBusy(false);
+      updateButtons();
+    }
+  }
+
+  function requestSafeClean() {
+    if (state.scanning) {
+      showToast("正在处理中，请稍候", "err");
       return;
     }
-    models.forEach(function (m) {
-      var id = typeof m === 'string' ? m : m.id;
-      var label = typeof m === 'string' ? m : m.label || m.id;
-      var o = document.createElement('option');
-      o.value = id;
-      o.textContent = label;
-      if (currentId && id === currentId) o.selected = true;
-      el.modelSelect.appendChild(o);
-    });
-    el.modelSelect.disabled = state.busy;
-  }
-
-  function loadServerConfig() {
-    return fetch('../config/server.json')
-      .then(function (res) {
-        if (!res.ok) throw new Error('无法读取 config/server.json');
-        return res.json();
-      })
-      .then(function (cfg) {
-        var host = cfg.host || '127.0.0.1';
-        var port = cfg.port || 18765;
-        state.apiBase = 'http://' + host + ':' + port;
-      });
-  }
-
-  function waitForPython(maxAttempts) {
-    var attempt = 0;
-    return new Promise(function (resolve, reject) {
-      function tick() {
-        attempt += 1;
-        fetch(state.apiBase + '/api/health')
-          .then(function (res) {
-            if (!res.ok) throw new Error('health ' + res.status);
-            return res.json();
-          })
-          .then(resolve)
-          .catch(function () {
-            if (attempt >= maxAttempts) {
-              reject(new Error('Python 服务未就绪，请先在产品中心启用本扩展'));
-              return;
-            }
-            setTimeout(tick, 400);
-          });
-      }
-      tick();
-    });
-  }
-
-  // ---------- Bridge adapter ----------
-
-  function extractContentDelta(data) {
-    if (typeof data === 'string') return data;
-    if (data && typeof data === 'object') {
-      if (typeof data.content === 'string') return data.content;
-      if (typeof data.text === 'string') return data.text;
+    const ids = selectedCleanableIds();
+    if (!ids.length) {
+      showToast("请先勾选可清理的垃圾分类", "err");
+      setHint("未选择可清理项。下载/其他垃圾默认不可一键清理。");
+      return;
     }
-    return '';
-  }
-
-  function bridgeEnsureSession() {
-    if (!dialogue) return Promise.reject(new Error('Dialogue SDK 未加载'));
-    return dialogue.ready().then(function () {
-      if (state.bridge.sessionId) return { sessionId: state.bridge.sessionId };
-      return dialogue.createSession({}).then(function (r) {
-        state.bridge.sessionId = r.sessionId;
-        if (state.bridge.unsub) {
-          state.bridge.unsub();
-          state.bridge.unsub = null;
-        }
-        state.bridge.unsub = dialogue.onStream(r.sessionId, onBridgeStream);
-        return dialogue.warmup(r.sessionId).then(
-          function () {
-            return r;
-          },
-          function () {
-            return r;
-          }
-        );
-      });
+    const bytes = selectedBytes();
+    const names = state.categories
+      .filter((c) => ids.includes(c.id))
+      .map((c) => `<li>${c.name} · ${fmtSize(c.bytes)}</li>`)
+      .join("");
+    state.pendingSafeIds = ids;
+    openModal({
+      title: "确认安全清理",
+      warn: `将永久删除以下已选垃圾（约 ${fmtGB(bytes)} GB），不会进入回收站。`,
+      actionsHtml: names,
+      mode: "safe",
     });
   }
 
-  function bridgeRefreshModels() {
-    if (!state.bridge.sessionId) return Promise.resolve();
-    return dialogue.getModelInfo(state.bridge.sessionId).then(function (res) {
-      var info = res && res.modelInfo;
-      state.bridge.modelInfo = info;
-      if (!info) {
-        fillModelSelect([], null);
-        return;
-      }
-      var models = (info.availableModels || []).map(function (m) {
-        return { id: m.id, label: m.label || m.id };
-      });
-      fillModelSelect(models, info.currentModelId);
-      el.modelSelect.disabled = state.busy || !info.canSwitch;
-    });
-  }
-
-  var bridgeBuffers = {};
-
-  function onBridgeStream(evt) {
-    if (!evt || !evt.type) return;
-    var msgId = evt.msgId || 'default';
-
-    switch (evt.type) {
-      case 'start':
-        bridgeBuffers[msgId] = '';
-        updateAssistantBubble(msgId, '', true);
-        setBusy(true);
-        break;
-      case 'content':
-        bridgeBuffers[msgId] = (bridgeBuffers[msgId] || '') + extractContentDelta(evt.data);
-        updateAssistantBubble(msgId, bridgeBuffers[msgId], true);
-        break;
-      case 'acp_permission':
-        try {
-          var req = evt.data || {};
-          var callId = req.toolCall && req.toolCall.toolCallId;
-          var option = (req.options && req.options[0]) || { optionId: 'allow_once' };
-          if (callId && state.bridge.sessionId) {
-            dialogue.confirmPermission({
-              sessionId: state.bridge.sessionId,
-              callId: callId,
-              data: option,
-              msgId: evt.msgId,
-            });
-          }
-        } catch (e) {
-          /* ignore */
-        }
-        break;
-      case 'acp_model_info':
-        if (evt.data) {
-          state.bridge.modelInfo = evt.data;
-          var models = (evt.data.availableModels || []).map(function (m) {
-            return { id: m.id, label: m.label || m.id };
-          });
-          fillModelSelect(models, evt.data.currentModelId);
-        }
-        break;
-      case 'error':
-        updateAssistantBubble(msgId, bridgeBuffers[msgId] || '', false);
-        appendMessage('system', typeof evt.data === 'string' ? evt.data : JSON.stringify(evt.data));
-        setBusy(false);
-        break;
-      case 'finish':
-        updateAssistantBubble(msgId, bridgeBuffers[msgId] || '', false);
-        setBusy(false);
-        break;
-      default:
-        break;
-    }
-  }
-
-  function bridgeSend(text) {
-    return bridgeEnsureSession().then(function () {
-      appendMessage('user', text);
-      setBusy(true);
-      return dialogue.sendMessage({ sessionId: state.bridge.sessionId, text: text });
-    });
-  }
-
-  function bridgeStop() {
-    if (!state.bridge.sessionId) return Promise.resolve();
-    return dialogue.stopGeneration(state.bridge.sessionId).finally(function () {
-      setBusy(false);
-    });
-  }
-
-  function bridgeSetModel(modelId) {
-    if (!state.bridge.sessionId || !modelId) return Promise.resolve();
-    return dialogue.setModel(state.bridge.sessionId, modelId).then(function (res) {
-      if (res && res.modelInfo) {
-        state.bridge.modelInfo = res.modelInfo;
-        var models = (res.modelInfo.availableModels || []).map(function (m) {
-          return { id: m.id, label: m.label || m.id };
-        });
-        fillModelSelect(models, res.modelInfo.currentModelId);
-      }
-    });
-  }
-
-  function bridgeReset() {
-    var close =
-      state.bridge.sessionId && dialogue
-        ? dialogue.closeSession(state.bridge.sessionId).catch(function () {})
-        : Promise.resolve();
-    if (state.bridge.unsub) {
-      state.bridge.unsub();
-      state.bridge.unsub = null;
-    }
-    state.bridge.sessionId = null;
-    state.bridge.modelInfo = null;
-    bridgeBuffers = {};
-    return close.then(function () {
-      clearMessages();
-      return bridgeEnsureSession().then(function () {
-        return bridgeRefreshModels();
-      });
-    });
-  }
-
-  // ---------- Direct adapter ----------
-
-  function getModelsTokenFresh() {
-    if (!identity) return Promise.reject(new Error('Identity SDK 未加载'));
-    return identity.ready().then(function () {
-      return identity.getModelsToken();
-    }).then(function (result) {
-      var token = result && result.token ? result.token : '';
-      if (!token) throw new Error('Models Token 为空，请确认已 SSO 登录且具备 identityModels 权限');
-      state.direct.modelsToken = token;
-      return token;
-    });
-  }
-
-  function directRefreshModels() {
-    return getModelsTokenFresh()
-      .then(function (token) {
-        return fetch(state.apiBase + '/api/models', {
-          headers: {
-            'X-Identity-Models-Token': token,
-            'X-Identity-Version': '1',
-          },
-        }).then(function (res) {
-          return res.json().then(function (body) {
-            if (!res.ok) {
-              var detail = body && body.detail ? JSON.stringify(body.detail) : res.statusText;
-              throw new Error(detail);
-            }
-            return body;
-          });
-        });
-      })
-      .then(function (data) {
-        state.direct.models = data.models || [];
-        fillModelSelect(state.direct.models, data.defaultModel || state.direct.models[0]);
-      });
-  }
-
-  function parseSseChunks(buffer, onEvent) {
-    var parts = buffer.split('\n\n');
-    var rest = parts.pop();
-    for (var i = 0; i < parts.length; i++) {
-      var block = parts[i];
-      var lines = block.split('\n');
-      for (var j = 0; j < lines.length; j++) {
-        var line = lines[j];
-        if (line.indexOf('data:') !== 0) continue;
-        var payload = line.slice(5).trim();
-        if (!payload) continue;
-        onEvent(payload);
-      }
-    }
-    return rest;
-  }
-
-  function extractStreamDelta(payload) {
-    if (payload === '[DONE]') return { done: true, text: '' };
+  async function executeSafeClean(ids) {
+    state.scanning = true;
+    updateButtons();
+    setBusy(true, "正在安全清理…");
+    setStatus("正在清理…", "warn");
+    setHint("正在安全清理已选垃圾…");
+    showToast("开始清理…");
     try {
-      var obj = JSON.parse(payload);
-      if (obj.error) return { done: true, text: '', error: typeof obj.error === 'string' ? obj.error : JSON.stringify(obj.error) };
-      var choices = obj.choices || [];
-      if (choices[0] && choices[0].delta && typeof choices[0].delta.content === 'string') {
-        return { done: false, text: choices[0].delta.content };
-      }
-      if (choices[0] && choices[0].message && typeof choices[0].message.content === 'string') {
-        return { done: true, text: choices[0].message.content };
-      }
-    } catch (e) {
-      /* ignore non-json */
-    }
-    return { done: false, text: '' };
-  }
-
-  function directSend(text) {
-    var model = el.modelSelect.value;
-    if (!model) return Promise.reject(new Error('请先选择模型'));
-
-    appendMessage('user', text);
-    state.direct.history.push({ role: 'user', content: text });
-
-    var msgId = 'd-' + Date.now().toString(36);
-    var assembled = '';
-    updateAssistantBubble(msgId, '', true);
-    setBusy(true);
-
-    var controller = new AbortController();
-    state.direct.abort = controller;
-
-    return getModelsTokenFresh()
-      .then(function (token) {
-        return fetch(state.apiBase + '/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Identity-Models-Token': token,
-            'X-Identity-Version': '1',
-          },
-          body: JSON.stringify({
-            model: model,
-            stream: true,
-            messages: state.direct.history.slice(),
-          }),
-          signal: controller.signal,
-        });
-      })
-      .then(function (res) {
-        if (!res.ok) {
-          return res.json().then(
-            function (body) {
-              var detail = body && body.detail ? JSON.stringify(body.detail) : res.statusText;
-              throw new Error(detail);
-            },
-            function () {
-              throw new Error('chat failed: ' + res.status);
-            }
-          );
-        }
-        if (!res.body || !res.body.getReader) {
-          throw new Error('浏览器不支持流式读取');
-        }
-        var reader = res.body.getReader();
-        var decoder = new TextDecoder();
-        var buf = '';
-
-        function pump() {
-          return reader.read().then(function (result) {
-            if (result.done) {
-              updateAssistantBubble(msgId, assembled, false);
-              if (assembled) state.direct.history.push({ role: 'assistant', content: assembled });
-              setBusy(false);
-              state.direct.abort = null;
-              return;
-            }
-            buf += decoder.decode(result.value, { stream: true });
-            buf = parseSseChunks(buf, function (payload) {
-              var delta = extractStreamDelta(payload);
-              if (delta.error) {
-                appendMessage('system', delta.error);
-                return;
-              }
-              if (delta.text) {
-                assembled += delta.text;
-                updateAssistantBubble(msgId, assembled, true);
-              }
-            });
-            return pump();
-          });
-        }
-        return pump();
-      })
-      .catch(function (err) {
-        if (err && err.name === 'AbortError') {
-          updateAssistantBubble(msgId, assembled || '（已停止）', false);
-          if (assembled) state.direct.history.push({ role: 'assistant', content: assembled });
-        } else {
-          updateAssistantBubble(msgId, assembled, false);
-          appendMessage('system', (err && err.message) || String(err));
-        }
-        setBusy(false);
-        state.direct.abort = null;
+      const result = await api("/api/clean/safe", {
+        method: "POST",
+        body: JSON.stringify({ categoryIds: ids, confirm: true }),
       });
-  }
-
-  function directStop() {
-    if (state.direct.abort) {
-      state.direct.abort.abort();
-      state.direct.abort = null;
-    }
-    setBusy(false);
-    return Promise.resolve();
-  }
-
-  function directReset() {
-    if (state.direct.abort) state.direct.abort.abort();
-    state.direct.abort = null;
-    state.direct.history = [];
-    clearMessages();
-    return Promise.resolve();
-  }
-
-  // ---------- Mode switch & UI wiring ----------
-
-  function switchMode(mode) {
-    if (mode === state.mode && !state.busy) {
-      /* still refresh */
-    }
-    if (state.busy) return;
-
-    state.mode = mode;
-    el.tabs.forEach(function (tab) {
-      var active = tab.getAttribute('data-mode') === mode;
-      tab.classList.toggle('active', active);
-      tab.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-
-    clearMessages();
-    setPill('warn', mode === 'bridge' ? '对话桥初始化…' : '模型直连初始化…');
-
-    var boot =
-      mode === 'bridge'
-        ? bridgeEnsureSession()
-            .then(function () {
-              return bridgeRefreshModels();
-            })
-            .then(function () {
-              setPill('ok', '对话桥就绪');
-              el.input.disabled = false;
-              el.btnSend.disabled = false;
-            })
-        : waitForPython(30)
-            .then(function () {
-              return directRefreshModels();
-            })
-            .then(function () {
-              setPill('ok', '模型直连就绪 · ' + state.apiBase);
-              el.input.disabled = false;
-              el.btnSend.disabled = !canSend();
-            });
-
-    boot.catch(function (err) {
-      setPill('err', err.message || String(err));
-      appendMessage('system', err.message || String(err));
-      el.input.disabled = true;
-      el.btnSend.disabled = true;
-    });
-  }
-
-  function onSend() {
-    var text = (el.input.value || '').trim();
-    if (!text || state.busy) return;
-    el.input.value = '';
-    var run = state.mode === 'bridge' ? bridgeSend(text) : directSend(text);
-    run.catch(function (err) {
-      appendMessage('system', err.message || String(err));
+      setStatus("清理完成", "ok");
+      setHint(`约释放 ${fmtGB(result.freedBytes)} GB`);
+      showToast(`清理完成，约释放 ${fmtGB(result.freedBytes)} GB`, "ok");
+      await runScan();
+    } catch (err) {
+      setStatus("清理失败", "err");
+      setHint(err.message);
+      showToast(err.message, "err");
+      state.scanning = false;
       setBusy(false);
-    });
+      updateButtons();
+    }
   }
 
-  el.tabs.forEach(function (tab) {
-    tab.addEventListener('click', function () {
-      var mode = tab.getAttribute('data-mode');
-      if (mode && mode !== state.mode) switchMode(mode);
-    });
-  });
-
-  el.btnSend.addEventListener('click', onSend);
-  el.btnStop.addEventListener('click', function () {
-    if (state.mode === 'bridge') bridgeStop();
-    else directStop();
-  });
-  el.btnNew.addEventListener('click', function () {
-    if (state.busy) return;
-    var reset = state.mode === 'bridge' ? bridgeReset() : directReset();
-    reset.catch(function (err) {
-      appendMessage('system', err.message || String(err));
-    });
-  });
-
-  el.modelSelect.addEventListener('change', function () {
-    if (state.mode === 'bridge') {
-      bridgeSetModel(el.modelSelect.value).catch(function (err) {
-        appendMessage('system', err.message || String(err));
+  async function openDeepModal() {
+    if (state.scanning) {
+      showToast("正在处理中，请稍候", "err");
+      return;
+    }
+    setBusy(true, "准备深度清理预览…");
+    try {
+      const data = await api("/api/clean/deep/preview", {
+        method: "POST",
+        body: JSON.stringify({ items: ["update_cache", "winsxs", "hibernate"] }),
       });
+      state.deepToken = data.confirmToken;
+      openModal({
+        title: "确认深度清理",
+        warn: (data.warnings || []).join(" "),
+        actionsHtml: (data.preview?.actions || [])
+          .map((a) => `<li>${a.label} · ${fmtSize(a.bytes)}</li>`)
+          .join(""),
+        mode: "deep",
+      });
+    } catch (err) {
+      setStatus("深度清理预览失败", "err");
+      setHint(err.message);
+      showToast(err.message, "err");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function executeDeepClean() {
+    if (!state.deepToken) {
+      showToast("确认已失效，请重新打开深度清理", "err");
+      return;
+    }
+    const token = state.deepToken;
+    state.scanning = true;
+    updateButtons();
+    setBusy(true, "正在深度清理…");
+    try {
+      const result = await api("/api/clean/deep", {
+        method: "POST",
+        body: JSON.stringify({ confirmToken: token, confirm: true }),
+      });
+      setStatus("深度清理完成", "ok");
+      setHint(`约释放 ${fmtGB(result.freedBytes)} GB`);
+      showToast(`深度清理完成，约释放 ${fmtGB(result.freedBytes)} GB`, "ok");
+      await runScan();
+    } catch (err) {
+      setStatus("深度清理失败", "err");
+      setHint(err.message);
+      showToast(err.message, "err");
+      state.scanning = false;
+      setBusy(false);
+      updateButtons();
+    }
+  }
+
+  async function onModalOk() {
+    const mode = state.modalMode;
+    const ids = state.pendingSafeIds.slice();
+    const token = state.deepToken;
+    closeModal();
+    if (mode === "safe") await executeSafeClean(ids);
+    else if (mode === "deep") {
+      state.deepToken = token;
+      await executeDeepClean();
+    }
+  }
+
+  $("cat-list").addEventListener("change", (e) => {
+    const t = e.target;
+    if (t.matches("input.check[data-id]")) {
+      const id = t.getAttribute("data-id");
+      if (t.checked) state.selected.add(id);
+      else state.selected.delete(id);
+      updateButtons();
     }
   });
 
-  el.input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  // click on row checkbox area + buttons (capture to avoid iframe quirks)
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest("button, input.check");
+    if (!t) return;
+    if (t.id === "btn-one-click" || t.id === "btn-clean-now") {
       e.preventDefault();
-      onSend();
+      requestSafeClean();
+    } else if (t.id === "btn-deep") {
+      e.preventDefault();
+      openDeepModal();
+    } else if (t.id === "btn-rescan") {
+      e.preventDefault();
+      runScan();
+    } else if (t.id === "btn-expand") {
+      e.preventDefault();
+      document.querySelectorAll(".cat-row").forEach((row) => row.classList.add("expanded"));
+    } else if (t.id === "modal-cancel") {
+      e.preventDefault();
+      closeModal();
+    } else if (t.id === "modal-ok") {
+      e.preventDefault();
+      onModalOk();
     }
   });
 
-  // Boot: load Python config (needed for direct), then start bridge tab
-  loadServerConfig()
-    .then(function () {
-      return waitForPython(40).catch(function () {
-        /* bridge tab can work without python; direct will fail later */
-      });
-    })
-    .then(function () {
-      switchMode('bridge');
-    })
-    .catch(function (err) {
-      setPill('err', err.message || String(err));
-    });
+  runScan();
 })();

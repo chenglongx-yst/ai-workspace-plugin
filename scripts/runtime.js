@@ -5,7 +5,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 
-const EXTENSION_NAME = 'third-party-integration-demo-python';
+const EXTENSION_NAME = 'c-drive-cleaner';
 
 function readServerConfig(extensionDir) {
   const configPath = path.join(extensionDir, 'config', 'server.json');
